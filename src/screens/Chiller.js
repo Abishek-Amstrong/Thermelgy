@@ -25,6 +25,7 @@ import generateChillerPayload, {
   generateChartForChiller,
 } from 'utilities/helpers/generateChillerPayload';
 import {font} from 'config/config';
+import AsyncStorage from '@react-native-community/async-storage';
 
 const subParamItems = {
   approach: [
@@ -59,11 +60,7 @@ function Chiller(props) {
   const [buttonValue, setButtonValue] = useState('approach');
   const [status, setStatus] = useState(false);
   const [chartLabel, setChartLabel] = useState(['MON']);
-  const [chartData, setChartData] = useState([
-    {
-      data: [1],
-    },
-  ]);
+  const [chartData, setChartData] = useState([]);
   const [chartLegends, setChartLegends] = useState([]);
   const [notification, setNotification] = React.useState(false);
   const [a1, setA1] = useState([]);
@@ -75,11 +72,12 @@ function Chiller(props) {
 
   // API 1(Electricity Consumption)
   const electricityConsump = async () => {
+    const clientName = await AsyncStorage.getItem('clientName');
     let payload = {
       api_name: 'card_data',
       data: {
         time_range: 'ea_daily',
-        client_id: 'Hablis',
+        client_id: clientName,
         machine_id: 'EBM',
         field: ['electricalEnergy'],
       },
@@ -110,10 +108,11 @@ function Chiller(props) {
 
   // API 2(Machine Count)
   const machineCount = async () => {
+    const clientName = await AsyncStorage.getItem('clientName');
     let payload = {
       api_name: 'machine_card',
       data: {
-        client_name: 'Hablis',
+        client_name: clientName,
       },
     };
     const result = await api.post('/api/genericApi', payload);
@@ -121,10 +120,11 @@ function Chiller(props) {
   };
   // API 3(Chiller Performance)
   const chillerPer = async () => {
+    const clientName = await AsyncStorage.getItem('clientName');
     let payload = {
       api_name: 'chiller_cards',
       data: {
-        client_id: 'Hablis',
+        client_id: clientName,
         time_range1: 'ea_daily',
         time_range2: 'daily',
         time_range3: 'hourly_secondary',
@@ -137,19 +137,40 @@ function Chiller(props) {
     setA3(result.data);
   };
 
-  console.log('machineId---> ', machineId);
+  const heatPumpCard = async () => {
+    const clientName = await AsyncStorage.getItem('clientName');
+    let payload = {
+      api_name: 'card_data',
+      data: {
+        time_range: 'daily',
+        client_id: clientName,
+        machine_id: 'HPSPLA1',
+        field: [
+          'electricalEnergyDailyHP',
+          'copHotSideDaily',
+          'hotSideThermalEnergyDaily',
+        ],
+      },
+    };
+
+    const result = await api.post('/api/genericApi', payload);
+    setA3(result.data);
+  };
 
   const getDeviceStatus = async () => {
+    const clientName = await AsyncStorage.getItem('clientName');
     const payload = {
       api_name: 'realtime',
       data: {
         time_range: 'minute',
-        client_id: 'Hablis',
+        client_id: clientName,
         machine_id: 'CH01',
       },
     };
     const result = await api.post('/api/genericApi', payload);
-    setDeviceStatus(result.data[0].Trane_Chiller.ChillerRunStat);
+    if (Array.isArray(result.data) && result.data.length) {
+      setDeviceStatus(result.data[0].Trane_Chiller.ChillerRunStat);
+    }
   };
 
   const fetchHeatPumpData = param => {
@@ -157,7 +178,7 @@ function Chiller(props) {
       return;
     }
     setButtonValue(param);
-    fetchChartData();
+    fetchChartData(param);
   };
 
   const setPerformanceParamType = param => {
@@ -264,16 +285,18 @@ function Chiller(props) {
     }
   };
 
-  const fetchChartData = async () => {
+  const fetchChartData = async paramValue => {
     setLoading(true);
     loader.setLoader(true);
+    const clientName = await AsyncStorage.getItem('clientName');
     const payload = generateChillerPayload(
-      `${buttonValue}-${performanceParam}`,
+      `${paramValue}-${performanceParam}`,
+      clientName,
     );
     console.log('processed-payload---> ', payload);
     const result = await api.post('/api/genericApi', payload);
     console.log('result---> ', result);
-    const data = generateChartForChiller(result.data, buttonValue);
+    const data = generateChartForChiller(result.data, paramValue);
 
     setChartLegends(data.legend);
     setChartLabel(data.labels);
@@ -287,7 +310,7 @@ function Chiller(props) {
     // await electricityConsump();
     // await machineCount();
     await chillerPer();
-    await fetchChartData();
+    await fetchChartData(buttonValue);
     setLoading(false);
   }
 
@@ -296,7 +319,7 @@ function Chiller(props) {
   }, [status]);
   // API for Dashboard A1,A2,A3
   useEffect(() => {
-    fetchChartData();
+    fetchChartData(buttonValue);
     fetchDashboardData();
     const deviceStatusInterval = setInterval(() => {
       getDeviceStatus();
@@ -309,12 +332,12 @@ function Chiller(props) {
 
   useEffect(() => {
     closeDropdowns();
-    fetchChartData();
+    fetchChartData(buttonValue);
   }, [performanceParam]);
 
   useEffect(() => {
     let machineIds = [];
-    if (machineType != null) {
+    if (machineType != null && Array.isArray(machine) && machine.length > 5) {
       machine[4].id.map((item, index) => {
         let machineIdobj = {};
         machineIdobj.label = item;
@@ -452,9 +475,11 @@ function Chiller(props) {
                 if (item.value === 1) {
                   setButtonValue('hourly');
                   setPerformanceParam('io_energy');
+                  heatPumpCard();
                 } else {
                   setButtonValue('approach');
                   setPerformanceParam('cond_evap');
+                  chillerPer();
                 }
               }}
             />
@@ -489,8 +514,12 @@ function Chiller(props) {
                 {renderDeviceStatus(deviceStatus)}
               </View>
             </View>
-            {/* <Text style={styles.overallConsumption} /> */}
-            {!loading && chartData.length === chartLegends.length && (
+            {Boolean(
+              !loading &&
+                chartData.length &&
+                chartData[0].data.length &&
+                chartData.length === chartLegends.length,
+            ) && (
               <LineChart
                 data={{
                   datasets: chartData,
@@ -582,19 +611,6 @@ function Chiller(props) {
           ) : (
             <View style={styles.button5Row}>
               <Button
-                title="Hourly"
-                onPress={() => fetchHeatPumpData('hourly')}
-                titleStyle={[
-                  styles.centerButtonTitleStyle,
-                  buttonValue === 'hourly' ? styles.selectedTitle : {},
-                ]}
-                buttonStyle={[
-                  styles.centerButton,
-                  buttonValue === 'hourly' ? styles.selectedButton : {},
-                ]}
-              />
-
-              <Button
                 title="Daily"
                 onPress={() => fetchHeatPumpData('daily')}
                 titleStyle={[
@@ -604,6 +620,18 @@ function Chiller(props) {
                 buttonStyle={[
                   styles.centerButton,
                   buttonValue === 'daily' ? styles.selectedButton : {},
+                ]}
+              />
+              <Button
+                title="Hourly"
+                onPress={() => fetchHeatPumpData('hourly')}
+                titleStyle={[
+                  styles.centerButtonTitleStyle,
+                  buttonValue === 'hourly' ? styles.selectedTitle : {},
+                ]}
+                buttonStyle={[
+                  styles.centerButton,
+                  buttonValue === 'hourly' ? styles.selectedButton : {},
                 ]}
               />
               <Button
@@ -638,7 +666,7 @@ function Chiller(props) {
           </TouchableOpacity>
         </View> */}
           <View style={styles.rect2}>
-            {a3 && (
+            {a3 && machineId !== 1 && (
               <View style={styles.group}>
                 <View style={styles.rect5}>
                   <View style={styles.icon5Row}>
@@ -655,6 +683,39 @@ function Chiller(props) {
                         </Text>
                         <Text style={styles.today4173KWh3}>
                           ikW/TR - {a3.DayPerformance}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                </View>
+              </View>
+            )}
+            {a3 && machineId === 1 && (
+              <View style={styles.group}>
+                <View style={styles.rect5}>
+                  <View style={styles.icon5Row}>
+                    <Graphthree style={styles.icon3} />
+                    <View style={styles.loremIpsum}>
+                      <Text style={styles.text3}>
+                        Heat Pump Performance Data
+                      </Text>
+                      <Text style={styles.electricalEnergy}>
+                        Electrical Energy -{' '}
+                        {Array.isArray(a3.electricalEnergyDailyHP) &&
+                          Math.round(a3.electricalEnergyDailyHP[1])}{' '}
+                        kWh
+                      </Text>
+                      <View style={styles.text4Row}>
+                        <Text style={styles.text4}>
+                          Thermal Energy -{' '}
+                          {Array.isArray(a3.hotSideThermalEnergyDaily) &&
+                            Math.round(a3.hotSideThermalEnergyDaily[1])}{' '}
+                          TR
+                        </Text>
+                        <Text style={styles.today4173KWh3}>
+                          C.O.P -{' '}
+                          {Array.isArray(a3.copHotSideDaily) &&
+                            a3.copHotSideDaily[1]}
                         </Text>
                       </View>
                     </View>
